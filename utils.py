@@ -2,16 +2,14 @@ import json
 import requests
 import csv
 from io import StringIO
+import google.generativeai as genai
 
-def call_openrouter_api(text_input, api_key):
+def call_gemini_api(text_input, api_key):
     """
-    Call OpenRouter API to convert text to quiz format
+    Call Gemini API to convert text to quiz format
     """
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://localhost:5000",
-        "Content-Type": "application/json"
-    }
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-pro')
 
     system_prompt = """Convert the following text into a quiz format JSON with the following structure:
     {
@@ -49,41 +47,19 @@ def call_openrouter_api(text_input, api_key):
         - Present the same concept differently
     12. Ensure each option represents a distinct and unique choice"""
 
-    data = {
-        "model": "openai/gpt-3.5-turbo",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text_input}
-        ]
-    }
-
     try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=data
-        )
-        response.raise_for_status()
+        full_prompt = f"{system_prompt}\n\nText to convert:\n{text_input}"
+        response = model.generate_content(full_prompt)
 
-        # Extract the JSON string from the response
-        result = response.json()
-        if 'choices' not in result:
-            return None, f"API Response Error: {json.dumps(result)}"
-            
-        generated_text = result['choices'][0]['message']['content']
-        if not generated_text:
+        if not response.text:
             return None, "Empty response from API"
 
         # Parse the generated text as JSON
-        quiz_json = json.loads(generated_text)
+        quiz_json = json.loads(response.text)
         return quiz_json, None
 
-    except requests.exceptions.RequestException as e:
-        return None, f"API Error: {str(e)}"
-    except json.JSONDecodeError as e:
-        return None, f"JSON Parsing Error: {str(e)}"
     except Exception as e:
-        return None, f"Unexpected Error: {str(e)}"
+        return None, f"API Error: {str(e)}"
 
 def format_json(json_data):
     """
