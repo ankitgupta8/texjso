@@ -1,6 +1,9 @@
 import streamlit as st
 import json
-from utils import call_openrouter_api, format_json, convert_to_csv
+from utils import call_gemini_api, format_json, convert_to_csv
+
+# Hardcoded API key
+GEMINI_API_KEY = "AIzaSyDSWJJSX_VPylzmw2liQv6C3hDpBqbW87M"
 
 # Page configuration
 st.set_page_config(
@@ -31,13 +34,7 @@ This app converts your text into a structured quiz format using AI. Simply paste
 and the app will generate quiz questions with multiple choice answers in a organized JSON format.
 """)
 
-# API Key input with default value
-api_key = st.text_input(
-    "Enter your OpenRouter API Key",
-    value="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",
-    type="password",
-    help="Your API key will not be stored"
-)
+# Using hardcoded API key
 
 # Example text
 example_text = """
@@ -62,7 +59,7 @@ if st.button("Generate Quiz JSON", disabled=not text_input):
         st.error("Please enter some text")
     else:
         with st.spinner("Generating quiz..."):
-            result, error = call_openrouter_api(text_input, api_key)
+            result, error = call_gemini_api(text_input, GEMINI_API_KEY)
 
             if error:
                 st.error(error)
