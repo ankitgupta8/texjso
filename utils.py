@@ -30,8 +30,9 @@ def call_gemini_api(text_input, api_key):
     }
 
     Important instructions:
+    - generate as many questions as possible
     -correct answer should be verified and most of the time answer will be in text itself 
-    1. Create as many questions as possible from the content (minimum 5 questions)
+    1. Create as many questions as possible from the content (minimum 10 questions)
     2. Group all questions into a single chapter instead of creating multiple chapters
     3. dont create a new chapter
     4. Make sure each question has detailed explanations
@@ -54,9 +55,24 @@ def call_gemini_api(text_input, api_key):
         if not response.text:
             return None, "Empty response from API"
 
-        # Parse the generated text as JSON
-        quiz_json = json.loads(response.text)
-        return quiz_json, None
+        try:
+            # Try to find JSON content within the response
+            text = response.text.strip()
+            # Find the first { and last } to extract JSON
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            
+            if start >= 0 and end > start:
+                json_str = text[start:end]
+                quiz_json = json.loads(json_str)
+                return quiz_json, None
+            else:
+                return None, "No valid JSON found in response"
+                
+        except json.JSONDecodeError as e:
+            return None, f"Failed to parse JSON response: {str(e)}"
+        except Exception as e:
+            return None, f"Unexpected error: {str(e)}"
 
     except Exception as e:
         return None, f"API Error: {str(e)}"
