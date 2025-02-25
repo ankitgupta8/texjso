@@ -112,4 +112,4 @@ with st.expander("How to use"):
 
 # Footer
 st.markdown("---")
-st.markdown("Built with Streamlit and OpenRouter API")
+st.markdown("Built with Streamlit and gemini API")
