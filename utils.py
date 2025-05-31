@@ -23,7 +23,7 @@ def call_gemini_api(text_input, api_key):
     Call Gemini API to convert text to quiz format with AsciiMath notation
     """
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-05-20')
 
     system_prompt = """Convert the following text into a quiz format JSON with the following structure:
     {
