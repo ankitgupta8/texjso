@@ -4,311 +4,169 @@ import csv
 from io import StringIO
 import google.generativeai as genai
 import re
-import logging
-from typing import Dict, List, Optional, Tuple, Any
-import time
 
-# ─────────────────────────────── logging ──────────────────────────────── #
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ──────────────────────────────── errors ──────────────────────────────── #
-class QuizGeneratorError(Exception):
-    """Custom exception for quiz-generator errors."""
-    pass
-
-# ────────────────────────── helper: LaTeX validator ───────────────────── #
-def validate_and_warn_latex(text: str) -> List[str]:
+def preprocess_asciimath(text):
     """
-    *Passive* check — never mutates the string.
-    Returns a list of warnings about obviously malformed LaTeX delimiters.
+    Preprocess text containing AsciiMath expressions to make it JSON-safe while preserving the math
     """
-    issues = []
-    if not text:
-        return issues
-
-    # unmatched single '$' (ignore '$$ … $$')
-    singles = text.count('$') - 2 * text.count('$$')
-    if singles % 2:
-        issues.append("Unbalanced single dollar signs ($)")
-
-    # unmatched braces
-    opens, closes = text.count('{'), text.count('}')
-    if opens != closes:
-        issues.append(f"Unbalanced braces: {{={opens}}, }}={closes}")
-
-    return issues
-
-# ─────────────────────────── helper: JSON shape ───────────────────────── #
-def validate_json_structure(data: Dict) -> bool:
-    """Validate that the JSON has the expected quiz structure."""
-    try:
-        if not isinstance(data, dict):
-            return False
-
-        required_keys = ['subject', 'chapters']
-        if not all(key in data for key in required_keys):
-            return False
-
-        if not isinstance(data['chapters'], list) or not data['chapters']:
-            return False
-
-        for chapter in data['chapters']:
-            if not isinstance(chapter, dict):
-                return False
-            if 'chapterName' not in chapter or 'quizQuestions' not in chapter:
-                return False
-            if not isinstance(chapter['quizQuestions'], list):
-                return False
-
-            for question in chapter['quizQuestions']:
-                if not isinstance(question, dict):
-                    return False
-                required_q_keys = ['question', 'options',
-                                   'correctAnswer', 'explanation']
-                if not all(key in question for key in required_q_keys):
-                    return False
-                if not isinstance(question['options'], list) or len(question['options']) < 2:
-                    return False
-                if question['correctAnswer'] not in question['options']:
-                    logger.warning(
-                        "Correct answer not found in options: %s",
-                        question['correctAnswer']
-                    )
-        return True
-    except Exception as e:
-        logger.error("JSON validation failed: %s", e)
-        return False
-
-# ─────────────────────── helper: clean model output ───────────────────── #
-def clean_json_response(text: str) -> str:
-    """
-    Strip markdown fences & obvious noise; return best-guess JSON string.
-    """
-    if not text:
-        return ""
-
-    # Remove common markdown code fences
-    text = re.sub(r'```(?:json)?\n?', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'```', '', text)
-
-    text = text.strip()
-
-    # Heuristics
-    strategies = [
-        # full object
-        lambda t: t[t.find('{'):t.rfind('}') + 1] if '{' in t and '}' in t else "",
-        # full array
-        lambda t: t[t.find('['):t.rfind(']') + 1] if '[' in t and ']' in t else "",
-        # collapse whitespace
-        lambda t: re.sub(r'\s+', ' ', t),
-        # drop control chars
-        lambda t: ''.join(ch for ch in t if ord(ch) >= 32 or ch in '\n\r\t'),
-    ]
-
-    for strat in strategies:
-        try:
-            candidate = strat(text)
-            if candidate.strip():
-                return candidate.strip()
-        except Exception:
-            continue
+    def escape_asciimath(match):
+        math = match.group(0)
+        # Preserve the backtick delimiters and escape necessary characters
+        return math.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Process AsciiMath expressions (delimited by backticks)
+    text = re.sub(r'`[^`]+`', escape_asciimath, text, flags=re.DOTALL)
     return text
 
-# ────────────────────────────── core: Gemini ──────────────────────────── #
-def call_gemini_api(text_input: str, api_key: str,
-                    max_retries: int = 3) -> Tuple[Optional[Dict], Optional[str]]:
+def call_gemini_api(text_input, api_key):
     """
-    Call Gemini, clean/validate/parse JSON, return Python dict on success.
+    Call Gemini API to convert text to quiz format with AsciiMath notation
     """
-    if not text_input or not text_input.strip():
-        return None, "Empty input text provided"
-    if not api_key:
-        return None, "API key not provided"
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.0-flash')
 
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-    except Exception as e:
-        return None, f"Failed to configure Gemini API: {e}"
-
-    system_prompt = """
-Convert the following text into a quiz-format JSON:
-
-{
-  "subject": "Subject name based on content",
-  "chapters": [
+    system_prompt = """Convert the following text into a quiz format JSON with the following structure:
     {
-      "chapterName": "Chapter name based on content",
-      "quizQuestions": [
-        {
-          "question": "Question text",
-          "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-          "correctAnswer": "Correct option",
-          "explanation": "Detailed explanation"
-        }
-      ]
+        "subject": "Subject name based on content",
+        "chapters": [
+            {
+                "chapterName": "Chapter name based on content",
+                "quizQuestions": [
+                    {
+                        "question": "Question text",
+                        "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                        "correctAnswer": "Correct option",
+                        "explanation": "Detailed explanation of the answer"
+                    }
+                ]
+            }
+        ]
     }
-  ]
-}
 
-CRITICAL REQUIREMENTS
-1. ≥10 questions, all in ONE chapter
-2. Detailed explanations
-3. Unique, relevant options
-4. correctAnswer must EXACTLY match one option
-5. Math content in proper LaTeX: $…$ for inline, $$…$$ for display
-6. Return ONLY valid JSON — no prose
-"""
+    Important instructions:
+    - generate as many questions as possible
+    - correct answer should be verified and most of the time answer will be in text itself 
+    1. Create as many questions as possible from the content (minimum 10 questions)
+    2. Group all questions into a single chapter instead of creating multiple chapters
+    3. dont create a new chapter
+    4. Make sure each question has detailed explanations
+    5. Ensure all options are relevant to the question
+    6. Verify that all options are unique and not duplicate/similar
+    7. Each option must be factually different from others
+    8. The correct answer must be exactly matching one of the given options
+    9. Options should be clear and unambiguous
+    10. No two options should be the same in text. if same then change options.
+    11. Review each option pair and rephrase if they:
+        - Have similar wording or meaning
+        - Could be interpreted as synonyms
+        - Present the same concept differently
+    12. Ensure each option represents a distinct and unique choice
+    13. For mathematical content:
+        - Use AsciiMath notation enclosed in backticks (`) for all mathematical expressions
+        - Examples of AsciiMath notation:
+          * Fractions: `1/2` or `frac{1}{2}`
+          * Square roots: `sqrt{x}`
+          * Exponents: `x^2`
+          * Greek letters: `alpha`, `beta`, `pi`
+          * Integrals: `int_a^b f(x) dx`
+        - Keep AsciiMath expressions intact and properly escaped in the response
+        - Use simpler AsciiMath notation when possible for better readability"""
 
-    for attempt in range(max_retries):
+    try:
+        full_prompt = f"{system_prompt}\n\nText to convert:\n{text_input}"
+        response = model.generate_content(full_prompt)
+
+        if not response.text:
+            return None, "Empty response from API"
+
         try:
-            if attempt:
-                time.sleep(2 ** attempt)         # exponential back-off
-
-            response = model.generate_content(
-                f"{system_prompt}\n\nText to convert:\n{text_input}",
-                generation_config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 8192
-                }
-            )
-
-            if not response or not response.text:
-                logger.warning("Empty API response (attempt %d)", attempt + 1)
-                continue
-
-            raw_text = response.text.strip()
-            cleaned_text = clean_json_response(raw_text)
-
-            # passive LaTeX sanity check
-            latex_issues = validate_and_warn_latex(cleaned_text)
-            for issue in latex_issues:
-                logger.warning("LaTeX issue: %s", issue)
-
-            # Try to parse (no extra escaping!)
-            for candidate in (cleaned_text, raw_text):
-                if not candidate:
-                    continue
-                try:
-                    quiz_json = json.loads(candidate)
-
-                    if not validate_json_structure(quiz_json):
-                        logger.warning("Invalid JSON structure")
-                        continue
-
-                    quiz_json = post_process_quiz_data(quiz_json)
-                    logger.info("Parsed JSON on attempt %d", attempt + 1)
+            # Preprocess the response text to handle AsciiMath expressions
+            text = response.text.strip()
+            
+            # Remove any markdown formatting that might be present
+            text = re.sub(r'```json|```', '', text)
+            
+            # Find the first { and last } to extract JSON
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            
+            if start >= 0 and end > start:
+                json_str = text[start:end]
+                # Clean up whitespace while preserving AsciiMath
+                json_str = re.sub(r'\s+', ' ', json_str)
+                # Preprocess AsciiMath expressions
+                json_str = preprocess_asciimath(json_str)
+                
+                # Parse JSON
+                quiz_json = json.loads(json_str)
+                
+                # Verify that AsciiMath expressions are preserved
+                def verify_asciimath(obj):
+                    if isinstance(obj, dict):
+                        return {k: verify_asciimath(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [verify_asciimath(item) for item in obj]
+                    elif isinstance(obj, str):
+                        # Ensure AsciiMath delimiters are preserved
+                        if '`' in obj:
+                            return obj
+                        return obj
+                    return obj
+                
+                quiz_json = verify_asciimath(quiz_json)
+                return quiz_json, None
+            else:
+                return None, "No valid JSON found in response"
+                
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, try additional cleanup
+            try:
+                # Additional cleanup attempt
+                text = re.sub(r'[^\x20-\x7E\n]', '', text)  # Remove non-printable characters
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start >= 0 and end > start:
+                    json_str = text[start:end]
+                    json_str = preprocess_asciimath(json_str)
+                    quiz_json = json.loads(json_str)
+                    quiz_json = verify_asciimath(quiz_json)
                     return quiz_json, None
-
-                except json.JSONDecodeError as e:
-                    logger.debug("JSON decode error: %s", e)
-                    continue
-
-            logger.warning("Parsing failed on attempt %d", attempt + 1)
-
+            except:
+                return None, f"Failed to parse JSON response: {str(e)}"
         except Exception as e:
-            logger.error("Attempt %d failed: %s", attempt + 1, e)
-            if attempt == max_retries - 1:
-                return None, f"API Error after {max_retries} attempts: {e}"
+            return None, f"Unexpected error: {str(e)}"
 
-    return None, f"Failed to generate valid quiz after {max_retries} attempts"
-
-# ──────────────────── post-processing & other utilities ───────────────── #
-def post_process_quiz_data(quiz_json: Dict) -> Dict:
-    """Fix common omissions & ensure data integrity."""
-    try:
-        quiz_json.setdefault('subject', "Generated Quiz")
-
-        for chap_idx, chapter in enumerate(quiz_json.get('chapters', []), 1):
-            chapter.setdefault('chapterName', f"Chapter {chap_idx}")
-
-            for q_idx, q in enumerate(chapter.get('quizQuestions', []), 1):
-                q.setdefault('question', f"Question {q_idx}")
-                q.setdefault('options', ["Option A", "Option B"])
-                while len(q['options']) < 2:
-                    q['options'].append(f"Option {len(q['options']) + 1}")
-                if q.get('correctAnswer') not in q['options']:
-                    q['correctAnswer'] = q['options'][0]
-                q.setdefault('explanation', "No explanation provided.")
-
-                # dedupe options (case-insensitive)
-                unique, seen = [], set()
-                for opt in q['options']:
-                    key = opt.strip().lower()
-                    if key not in seen:
-                        seen.add(key)
-                        unique.append(opt)
-                if q['correctAnswer'] not in unique:
-                    unique.insert(0, q['correctAnswer'])
-                q['options'] = unique
-
-        return quiz_json
     except Exception as e:
-        logger.error("Post-processing failed: %s", e)
-        return quiz_json
+        return None, f"API Error: {str(e)}"
 
-def format_json(json_data: Dict, indent: int = 2) -> str:
-    try:
-        return json.dumps(json_data, indent=indent, ensure_ascii=False)
-    except Exception as e:
-        logger.error("JSON formatting failed: %s", e)
-        return str(json_data)
+def format_json(json_data):
+    """
+    Format JSON data with proper indentation
+    """
+    return json.dumps(json_data, indent=2)
 
-def convert_to_csv(json_data: Dict) -> str:
-    """Convert validated quiz JSON → CSV (one row per question)."""
-    if not isinstance(json_data, dict):
-        raise QuizGeneratorError("Invalid JSON data for CSV conversion")
-
+def convert_to_csv(json_data):
+    """
+    Convert quiz JSON to CSV format
+    """
     output = StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
-    headers = ['Question', 'Option A', 'Option B',
-               'Option C', 'Option D', 'Correct Answer', 'Explanation']
-    writer.writerow(headers)
+    csv_writer = csv.writer(output)
 
-    question_count = 0
-    for chapter in json_data.get('chapters', []):
-        for q in chapter.get('quizQuestions', []):
-            options = q.get('options', []) + [''] * 4
+    # Write header
+    csv_writer.writerow(['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Explanation'])
+
+    # Extract questions from all chapters
+    for chapter in json_data['chapters']:
+        for question in chapter['quizQuestions']:
             row = [
-                q.get('question', 'No question'),
-                options[0], options[1], options[2], options[3],
-                q.get('correctAnswer', ''),
-                q.get('explanation', '')
+                question['question'],
+                question['options'][0] if len(question['options']) > 0 else '',
+                question['options'][1] if len(question['options']) > 1 else '',
+                question['options'][2] if len(question['options']) > 2 else '',
+                question['options'][3] if len(question['options']) > 3 else '',
+                question['correctAnswer'],
+                question['explanation']
             ]
-            writer.writerow(row)
-            question_count += 1
+            csv_writer.writerow(row)
 
-    if not question_count:
-        raise QuizGeneratorError("No questions to write")
-
-    logger.info("Converted %d questions to CSV", question_count)
     return output.getvalue()
-
-# ──────────────────────────── quick tester ────────────────────────────── #
-def test_quiz_generator():
-    sample_text = """
-The Pythagorean theorem states that in a right triangle
-the square of the hypotenuse equals the sum of squares of the other two sides.
-Mathematically: $a^2 + b^2 = c^2$.
-
-The quadratic formula:
-$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
-"""
-
-    api_key = "your-api-key-here"
-    quiz, err = call_gemini_api(sample_text, api_key)
-
-    if err:
-        print("Error:", err)
-        return False
-
-    print("Quiz generated!")
-    print("LaTeX warnings:", validate_and_warn_latex(json.dumps(quiz)))
-
-    print("JSON preview:", format_json(quiz)[:200], "…")
-    print("CSV preview:", convert_to_csv(quiz)[:200], "…")
-    return True
-
-if __name__ == "__main__":
-    test_quiz_generator()
