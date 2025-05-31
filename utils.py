@@ -3,6 +3,20 @@ import requests
 import csv
 from io import StringIO
 import google.generativeai as genai
+import re
+
+def preprocess_latex(text):
+    """
+    Preprocess text containing LaTeX equations to make it JSON-safe while preserving the equations
+    """
+    def escape_latex(match):
+        latex = match.group(0)
+        # Preserve the dollar signs and escape necessary characters
+        return latex.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Process both inline and display math mode LaTeX
+    text = re.sub(r'\$\$.*?\$\$|\$.*?\$', escape_latex, text, flags=re.DOTALL)
+    return text
 
 def call_gemini_api(text_input, api_key):
     """
@@ -46,7 +60,11 @@ def call_gemini_api(text_input, api_key):
         - Have similar wording or meaning
         - Could be interpreted as synonyms
         - Present the same concept differently
-    12. Ensure each option represents a distinct and unique choice"""
+    12. Ensure each option represents a distinct and unique choice
+    13. For mathematical content:
+        - Use LaTeX equations enclosed in $ for inline math or $$ for display math
+        - Make sure to properly format all mathematical expressions in LaTeX
+        - Keep LaTeX equations intact and properly escaped in the response"""
 
     try:
         full_prompt = f"{system_prompt}\n\nText to convert:\n{text_input}"
@@ -56,21 +74,59 @@ def call_gemini_api(text_input, api_key):
             return None, "Empty response from API"
 
         try:
-            # Try to find JSON content within the response
+            # Preprocess the response text to handle LaTeX equations
             text = response.text.strip()
+            
+            # Remove any markdown formatting that might be present
+            text = re.sub(r'```json|```', '', text)
+            
             # Find the first { and last } to extract JSON
             start = text.find('{')
             end = text.rfind('}') + 1
             
             if start >= 0 and end > start:
                 json_str = text[start:end]
+                # Clean up whitespace while preserving LaTeX
+                json_str = re.sub(r'\s+', ' ', json_str)
+                # Preprocess LaTeX equations
+                json_str = preprocess_latex(json_str)
+                
+                # Parse JSON
                 quiz_json = json.loads(json_str)
+                
+                # Verify that LaTeX equations are preserved
+                def verify_latex(obj):
+                    if isinstance(obj, dict):
+                        return {k: verify_latex(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [verify_latex(item) for item in obj]
+                    elif isinstance(obj, str):
+                        # Ensure LaTeX delimiters are preserved
+                        if '$' in obj:
+                            return obj
+                        return obj
+                    return obj
+                
+                quiz_json = verify_latex(quiz_json)
                 return quiz_json, None
             else:
                 return None, "No valid JSON found in response"
                 
         except json.JSONDecodeError as e:
-            return None, f"Failed to parse JSON response: {str(e)}"
+            # If JSON parsing fails, try additional cleanup
+            try:
+                # Additional cleanup attempt
+                text = re.sub(r'[^\x20-\x7E\n]', '', text)  # Remove non-printable characters
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start >= 0 and end > start:
+                    json_str = text[start:end]
+                    json_str = preprocess_latex(json_str)
+                    quiz_json = json.loads(json_str)
+                    quiz_json = verify_latex(quiz_json)
+                    return quiz_json, None
+            except:
+                return None, f"Failed to parse JSON response: {str(e)}"
         except Exception as e:
             return None, f"Unexpected error: {str(e)}"
 
