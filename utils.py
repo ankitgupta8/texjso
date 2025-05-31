@@ -64,7 +64,75 @@ def call_gemini_api(text_input, api_key):
     13. For mathematical content:
         - Use LaTeX equations enclosed in $ for inline math or $$ for display math
         - Make sure to properly format all mathematical expressions in LaTeX
-        - Keep LaTeX equations intact and properly escaped in the response"""
+        - Keep LaTeX equations intact and properly escaped in the response
+        # LaTeX Formatting Checklist
+
+1. **Basic Structure**
+   - Inline equations: `$...$`
+   - Display equations: `$$...$$`
+   - Multi-line equations: `$$\begin{align*}...\end{align*}$$`
+
+2. **Common Commands**
+   - Fractions: `\frac{numerator}{denominator}`
+   - Greek letters: `\Delta`, `\alpha`, `\beta`, etc.
+   - Powers: `x^{power}`
+   - Subscripts: `x_{subscript}`
+   - Square root: `\sqrt{content}`
+
+3. **Parentheses & Brackets**
+   - Regular: `(...)` or `[...]`
+   - Auto-sizing: `\left(...\right)` or `\left[...\right]`
+   - Curly braces: `\{...\}`
+
+4. **Spacing**
+   - Small space: `\,`
+   - Medium space: `\;`
+   - Large space: `\quad`
+   - Line break: `\\`
+
+5. **Special Symbols**
+   - Infinity: `\infty`
+   - Plus/minus: `\pm`
+   - Less than or equal: `\leq`
+   - Greater than or equal: `\geq`
+   - Multiplication dot: `\cdot`
+   - Times symbol: `\times`
+
+6. **Common Mistakes to Avoid**
+   - Always use `\` before commands
+   - Put complex expressions in `{...}`
+   - Don't forget closing brackets
+   - Use `\text{...}` for text within equations
+
+7. **Multi-line Equations**
+   - Alignment point: `&=`
+   - New line: `\\`
+   - Example:
+     ```
+     $$\begin{align*}
+     x &= y + 1 \\
+     &= z + 2
+     \end{align*}$$
+     ```
+
+8. **Common Environments**
+   - Matrices: `\begin{matrix}...\end{matrix}`
+   - Cases: `\begin{cases}...\end{cases}`
+   - Aligned equations: `\begin{align*}...\end{align*}`
+
+9. **Integrals & Sums**
+   - Integral: `\int_{lower}^{upper}`
+   - Sum: `\sum_{lower}^{upper}`
+   - Product: `\prod_{lower}^{upper}`
+
+10. **Testing**
+    - Always preview before submitting
+    - Check all brackets are paired
+    - Verify fractions have both numerator and denominator
+    - Ensure all special symbols have `\` prefix
+
+        """
+        
 
     try:
         full_prompt = f"{system_prompt}\n\nText to convert:\n{text_input}"
