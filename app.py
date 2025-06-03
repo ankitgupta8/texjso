@@ -3,7 +3,7 @@ import json
 from utils import call_gemini_api, format_json, convert_to_csv
 
 # Hardcoded API key
-GEMINI_API_KEY = "AIzaSyDSWJJSX_VPylzmw2liQv6C3hDpBqbW87M"
+GEMINI_API_KEY = "AIzaSyB5fymh69iqCj-k3JYcVFbGeC1Qci3DyIc"
 
 # Page configuration
 st.set_page_config(
